@@ -8,6 +8,7 @@ import { collectValueGroup } from "./value-group-collection";
 import {
   claimValueRequest,
   finishValueRequest,
+  nextValueRetryAt,
   ownsValueRequest,
   type ValueOutcome,
 } from "./value-processing";
@@ -53,7 +54,9 @@ export async function consumeValueRequest(
       db,
       claim,
       outcome,
-      terminal ? null : new Date(Date.now() + 60 * 60 * 1000),
+      // A retryable outcome backs off with its own attempt count instead of
+      // retrying at a flat hour forever (#1411 B12).
+      terminal ? null : await nextValueRetryAt(db, claim.deliveryId),
     );
     return outcome;
   };

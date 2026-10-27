@@ -1,0 +1,13 @@
+-- Bounded retry cadence for the Slopbot value queue (#1411 B12).
+--
+-- A delivery whose outcome stays retryable ('source-incomplete', 'authority',
+-- 'budget', 'retry') is re-claimed whenever retry_at passes. Until now every
+-- one of those finishes scheduled the next attempt at a flat hour, so a
+-- delivery that can never complete was re-run every hour for as long as the
+-- condition lasted: 414 such rows were waiting in production on 27 October.
+--
+-- The attempt count is recorded so the delay can grow with it, and so an
+-- operator list can name the deliveries that keep failing. Terminal outcomes
+-- ('published', 'current', 'open', 'historical') never use it: they carry no
+-- retry time, and their row keeps the count it reached.
+ALTER TABLE slopbot_value_processing ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;

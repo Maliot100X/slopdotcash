@@ -22,6 +22,42 @@ const terminal = new Set<ValueOutcome>([
 ]);
 const LEASE_MS = 10 * 60 * 1000;
 
+/** First retry delay of a retryable outcome; it doubles with each attempt. */
+export const VALUE_RETRY_BASE_MS = 60 * 60 * 1000;
+/** Longest retry delay: a retryable outcome never waits longer than one day. */
+export const VALUE_RETRY_MAX_MS = 24 * 60 * 60 * 1000;
+/** Doublings applied at most, so a large count cannot overflow the delay. */
+const VALUE_RETRY_MAX_STEPS = 20;
+
+/**
+ * Delay before the next attempt of a retryable outcome: the base interval
+ * doubled once per attempt already recorded, capped at one day. The sequence
+ * is bounded so a delivery that cannot complete stops costing an hourly run,
+ * while the outcome itself stays retryable rather than becoming a final zero.
+ */
+export function valueRetryDelayMs(attempts: number): number {
+  const step = Math.min(
+    Math.max(Math.trunc(attempts), 1) - 1,
+    VALUE_RETRY_MAX_STEPS,
+  );
+  return Math.min(VALUE_RETRY_BASE_MS * 2 ** step, VALUE_RETRY_MAX_MS);
+}
+
+/** The retry time for a retryable outcome, from the attempts already recorded. */
+export async function nextValueRetryAt(
+  db: D1Database,
+  deliveryId: string,
+  at = new Date(),
+): Promise<Date> {
+  const row = await db
+    .prepare(
+      "SELECT attempts FROM slopbot_value_processing WHERE delivery_id=?",
+    )
+    .bind(deliveryId)
+    .first<{ attempts: number }>();
+  return new Date(at.getTime() + valueRetryDelayMs((row?.attempts ?? 0) + 1));
+}
+
 /** Claim an existing durable request. One atomic statement handles the first
  * attempt, scheduled retries and recovery after a worker disappears.
  */
@@ -104,8 +140,8 @@ export async function finishValueRequest(
   const row = await db
     .prepare(
       `INSERT INTO slopbot_value_processing
-       (delivery_id,claim_token,lease_until,state,outcome,retry_at,updated_at)
-       SELECT r.delivery_id,?2,?7,?4,?5,?6,?7
+       (delivery_id,claim_token,lease_until,state,outcome,retry_at,updated_at,attempts)
+       SELECT r.delivery_id,?2,?7,?4,?5,?6,?7,?8
        FROM slopbot_value_processing owner
        JOIN slopbot_value_requests claimed ON claimed.delivery_id=owner.delivery_id
        JOIN slopbot_value_requests r ON r.repository_id=claimed.repository_id
@@ -117,6 +153,9 @@ export async function finishValueRequest(
          AND owner.state='running' AND owner.lease_until>?7
        ON CONFLICT(delivery_id) DO UPDATE SET claim_token=excluded.claim_token,
          state=excluded.state,outcome=excluded.outcome,retry_at=excluded.retry_at,
+         attempts=CASE WHEN excluded.retry_at IS NULL
+           THEN slopbot_value_processing.attempts
+           ELSE slopbot_value_processing.attempts+1 END,
          updated_at=excluded.updated_at
        WHERE slopbot_value_processing.delivery_id=?1
           OR slopbot_value_processing.state='waiting'
@@ -130,6 +169,7 @@ export async function finishValueRequest(
       outcome,
       retryAt?.toISOString() ?? null,
       at.toISOString(),
+      complete ? 0 : 1,
     )
     .first();
   if (!row) throw new Error("Value request lease is no longer owned");
