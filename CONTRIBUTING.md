@@ -307,6 +307,13 @@ failure-path tests, the checks below pass, and the evidence for the affected
 surface is attached. A merge does not prove deployment, and a deployment does
 not prove provider, chain, or payment availability.
 
+The checks below begin with a generated input: `public/data/leaderboard.json` is
+git-ignored, `scripts/generate-points.ts` reads it, and the publication stages
+produce it when it is absent — a build that skips it fails inside the points
+stage. Generate it explicitly with `bun run leaderboard:generate`, or use the
+prepared-snapshot path in [Local review checks](README.md#local-review-checks)
+when live ingestion is not available.
+
 Release checks are engineering checks. Deployment identity, deployed-byte
 comparison, DNS, TLS, redirects, and security headers belong to the release
 PR from `development` to `main` and to the deployment workflow. Other PRs mark
